@@ -2,6 +2,7 @@ program test_profiles
     use, intrinsic :: iso_fortran_env, only: dp => real64
     use simple_profiles
     use collis_alp
+    use collision_test_utils, only: set_flat_two_power, seed_rng
     implicit none
 
     logical :: all_passed
@@ -639,16 +640,6 @@ contains
         end if
     end subroutine test_maxwellian_fixed_point
 
-    subroutine set_flat_two_power()
-        profile_type = "two_power"
-        active_profile = TWO_POWER
-        Te_p1 = 1.0d0; Te_p2 = 0.0d0
-        Ti1_p1 = 1.0d0; Ti1_p2 = 0.0d0
-        Ti2_p1 = 1.0d0; Ti2_p2 = 0.0d0
-        ni1_p1 = 1.0d0; ni1_p2 = 0.0d0
-        ni2_p1 = 1.0d0; ni2_p2 = 0.0d0
-    end subroutine set_flat_two_power
-
     subroutine fill_constant_grid()
         integer :: i
         do i = 1, N_S_GRID
@@ -704,17 +695,6 @@ contains
             if (z(4) < p_therm) nlost = nlost + 1
         end do
     end subroutine run_ensemble
-
-    subroutine seed_rng()
-        integer :: n, i
-        integer, allocatable :: seed(:)
-        call random_seed(size=n)
-        allocate (seed(n))
-        do i = 1, n
-            seed(i) = 4242 + i*7
-        end do
-        call random_seed(put=seed)
-    end subroutine seed_rng
 
     subroutine normalize(h, n)
         integer, intent(in) :: n

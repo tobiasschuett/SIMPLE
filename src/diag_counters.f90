@@ -15,7 +15,8 @@ module diag_counters
 
     public :: EVT_NEWTON1_MAXIT, EVT_NEWTON2_MAXIT, EVT_RK_GAUSS_MAXIT, &
               EVT_RK_LOBATTO_MAXIT, EVT_FIXPOINT_MAXIT, EVT_R_NEGATIVE, &
-              EVT_FO_LOSS, EVT_FO_FAULT, N_EVENT
+              EVT_FO_LOSS, EVT_FO_FAULT, N_EVENT, &
+              EVT_STOST_PITCH_OVERSHOOT, EVT_COLLIDE_SUBSTEP, EVT_COLLIDE_CAP
     public :: diag_counters_init, count_event, diag_counters_total, &
               diag_counters_reset, event_name
 
@@ -30,11 +31,14 @@ module diag_counters
     ! s >= 1 crossing (physical loss); FAULT = field-inversion non-convergence.
     integer, parameter :: EVT_FO_LOSS = 7
     integer, parameter :: EVT_FO_FAULT = 8
-    integer, parameter :: N_EVENT = 8
+    integer, parameter :: EVT_STOST_PITCH_OVERSHOOT = 9  ! collision pitch overshoot (stost ierr=2)
+    integer, parameter :: EVT_COLLIDE_SUBSTEP = 10        ! collision sub-steps taken in collide
+    integer, parameter :: EVT_COLLIDE_CAP = 11            ! collide hit the sub-step ceiling
+    integer, parameter :: N_EVENT = 11
 
-    ! One cache line (64 B = 8 int64) per thread column, so neighbouring threads
+    ! Two cache lines (128 B = 16 int64) per thread column, so neighbouring threads
     ! never share a line. The event id indexes within a column; STRIDE >= N_EVENT.
-    integer, parameter :: STRIDE = 8
+    integer, parameter :: STRIDE = 16
     integer(int64), allocatable :: counts(:, :)  ! (STRIDE, 0:nthreads-1)
 
 contains
@@ -95,6 +99,12 @@ contains
             name = 'fo_loss'
         case (EVT_FO_FAULT)
             name = 'fo_fault'
+        case (EVT_STOST_PITCH_OVERSHOOT)
+            name = 'stost_pitch_overshoot'
+        case (EVT_COLLIDE_SUBSTEP)
+            name = 'collide_substep'
+        case (EVT_COLLIDE_CAP)
+            name = 'collide_cap'
         case default
             name = 'unknown'
         end select

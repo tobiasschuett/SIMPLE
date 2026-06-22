@@ -287,6 +287,10 @@ if (ENABLE_COVERAGE AND CMAKE_BUILD_TYPE MATCHES "Debug|Profile")
     target_link_libraries(testing_utils PUBLIC coverage_flags)
 endif()
 
+# Shared helpers for the collision tests (depends on simple for simple_profiles)
+add_library(collision_test_utils ${CMAKE_CURRENT_SOURCE_DIR}/collision_test_utils.f90)
+target_link_libraries(collision_test_utils PUBLIC simple)
+
 ##################################################
 # TEST EXECUTABLES
 ##################################################
@@ -380,9 +384,14 @@ add_executable (test_collis.x ../../src/test_collis.f90)
 target_link_libraries(test_collis.x simple)
 
 add_executable (test_profiles.x test_profiles.f90)
-target_link_libraries(test_profiles.x simple)
+target_link_libraries(test_profiles.x simple collision_test_utils)
 add_test(NAME test_profiles COMMAND test_profiles.x)
 set_tests_properties(test_profiles PROPERTIES LABELS "unit")
+
+add_executable (test_collision_subcycling.x test_collision_subcycling.f90)
+target_link_libraries(test_collision_subcycling.x simple collision_test_utils)
+add_test(NAME test_collision_subcycling COMMAND test_collision_subcycling.x)
+set_tests_properties(test_collision_subcycling PROPERTIES LABELS "unit")
 
 add_executable (test_samplers.x test_samplers.f90)
 target_link_libraries(test_samplers.x simple)

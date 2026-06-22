@@ -4,6 +4,7 @@ module collis_alp
 
     integer, parameter :: nsorts = 3
     integer, parameter :: N_S_GRID = 101
+    real(wp), parameter :: collision_eps = 0.3d0  ! max pitch increment per collision sub-step
 
     real(wp), dimension(nsorts) :: efcolf, velrat, enrat
     real(wp), dimension(nsorts, N_S_GRID) :: efcolf_grid, velrat_grid, enrat_grid
@@ -258,6 +259,48 @@ contains
             z(4) = pmin + abs(pmin - z(4))
         end if
     end subroutine stost
+
+    pure integer function collision_substeps(dpp, dhh, fpeff, p, dt) result(nsub)  ! sub-steps to keep each collision increment below eps
+        real(wp), intent(in) :: dpp, dhh, fpeff, p, dt
+        real(wp) :: plim, rate
+
+        ! Pick a sub-step length h (so nsub = dt/h) that keeps each increment stost
+        ! applies small. stost (this module) applies, over its step argument (= h here):
+        !   pitch:  dalam = sqrt(2*dhh*coala*h)*ur - 2*alam*dhh*h
+        !   energy: z(4) += sqrt(2*dpp*h)*ur + fpeff*h
+        ! with alam = z(5) = pitch cosine v_par/v, coala = 1 - alam**2 (perpendicular
+        ! fraction; both <= 1), and ur a zero-mean, order-1 random draw.
+        ! Bounding each increment, relative to its natural scale, by the fraction eps
+        ! (worst case coala = 1, |alam| = 1, |ur| = 1):
+        !   pitch kick    sqrt(2*dhh*h)   <= eps   -> h <= eps**2/(2*dhh)
+        !   energy kick   sqrt(2*dpp*h)/p <= eps   -> h <= (eps*p)**2/(2*dpp)
+        !   energy drift  |fpeff|*h/p     <= eps   -> h <= eps*p/|fpeff|
+        ! (the pitch drift 2*dhh*h is looser than the pitch kick for eps < 1, so the
+        ! kick covers it.) The binding (smallest) h gives nsub = dt/h = dt*max(rates),
+        ! rounded up, at least 1 (fast markers take a single step).
+        plim = max(p, 1.d-8)  ! floor so the energy terms don't divide by zero as p -> 0
+        rate = max(2.d0*dhh/collision_eps**2, &
+                   2.d0*dpp/(collision_eps*plim)**2, &
+                   abs(fpeff)/(collision_eps*plim))
+        nsub = max(1, ceiling(dt*rate))
+    end function collision_substeps
+
+    integer function collision_substep_cap(dt) result(cap)  ! safety_margin_factor x sub-steps a thermal marker needs for dt
+        real(wp), intent(in) :: dt
+        integer, parameter :: safety_margin_factor = 1000
+        real(wp) :: p_th, dpp, dhh, fpeff
+        integer :: nsub_thermal
+
+        ! Thermal slow-down speed p_th = v_thermal/v0 = 1/velrat. velrat(i) = v0/v_thermal,i;
+        ! take the max over the ion species (1:2, excluding the fast electrons at 3) for the
+        ! smallest p_th, i.e. the most collisional thermalization point where dhh is largest.
+        p_th = 1.d0/maxval(velrat(1:2))
+        call coleff(p_th, dpp, dhh, fpeff)
+        nsub_thermal = collision_substeps(dpp, dhh, fpeff, p_th, dt)
+        cap = safety_margin_factor*nsub_thermal
+        print *, 'collision_substep_cap: thermal-marker sub-steps =', nsub_thermal, &
+                 ', safety margin factor =', safety_margin_factor, ', resulting cap =', cap
+    end function collision_substep_cap
 
     subroutine getran(irand, ur)
         integer, intent(in) :: irand

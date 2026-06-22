@@ -4,24 +4,28 @@ module simple_main
     use util, only: sqrt2
     use simple, only: init_vmec, init_sympl, init_fo, orbit_timestep_fo, tracer_t
     use diag_mod, only: icounter
-    use collis_alp, only: loacol_alpha, stost, init_collision_profiles
+    use collis_alp, only: loacol_alpha, stost, init_collision_profiles, coleff, &
+                          collision_substeps, collision_substep_cap
     use samplers, only: sample
     use field_can_mod, only: integ_to_ref, ref_to_integ, init_field_can
-	    use callback, only: output_orbits_macrostep
-	    use params, only: swcoll, ntestpart, startmode, special_ants_file, num_surf, &
-	                      grid_density, dtau, dtaumin, ntau, v0, &
-	                      kpart, confpart_pass, confpart_trap, times_lost, integmode, &
-	                      relerr, trace_time, &
-	                      class_plot, fast_class, generate_start_only, ntcut, iclass, &
-	                      bmin, bmax, zstart, zend, trap_par, perp_inv, sbeg, &
-	                      ntimstep, should_skip, reset_seed_if_deterministic, &
-	                      field_input, isw_field_type, reuse_batch, coord_input, &
-	                      wall_input, wall_units, wall_hit, wall_hit_cart, &
-	                      wall_hit_normal_cart, wall_hit_cos_incidence, &
-	                      wall_hit_angle_rad, ntau_macro, kt_macro, &
-	                      checkpoint_interval, orbit_model, orbit_coord, &
-	                      ORBIT_GC, ORBIT_FULL_ORBIT
-    use diag_counters, only: diag_counters_init
+    use callback, only: output_orbits_macrostep
+    use params, only: swcoll, ntestpart, startmode, special_ants_file, num_surf, &
+                        grid_density, dtau, dtaumin, ntau, v0, &
+                        kpart, confpart_pass, confpart_trap, times_lost, integmode, &
+                        relerr, trace_time, &
+                        class_plot, fast_class, generate_start_only, ntcut, iclass, &
+                        bmin, bmax, zstart, zend, trap_par, perp_inv, sbeg, &
+                        ntimstep, should_skip, reset_seed_if_deterministic, &
+                        field_input, isw_field_type, reuse_batch, coord_input, &
+                        wall_input, wall_units, wall_hit, wall_hit_cart, &
+                        wall_hit_normal_cart, wall_hit_cos_incidence, &
+                        wall_hit_angle_rad, ntau_macro, kt_macro, &
+                        checkpoint_interval, orbit_model, orbit_coord, &
+                        ORBIT_GC, ORBIT_FULL_ORBIT
+    use diag_counters, only: diag_counters_init, checkpoint_interval
+    use diag_counters, only: diag_counters_init, count_event, &
+                             EVT_STOST_PITCH_OVERSHOOT, EVT_COLLIDE_SUBSTEP, &
+                             EVT_COLLIDE_CAP
     use progress_monitor, only: progress_init, progress_tick, progress_finalize
     use restart_mod, only: particle_done, read_restart_data, restore_confined_counts
     use chartmap_metadata, only: chartmap_metadata_t, read_chartmap_metadata
@@ -40,6 +44,7 @@ module simple_main
     real(dp), save :: wall_rho_lcfs = -1.0d0
     real(dp), save :: chartmap_cart_scale_to_m = -1.0d0
     type(stl_wall_t), save :: wall
+    integer, save :: collision_nsub_max  ! collision sub-step ceiling, set in init_collisions
 
 contains
 
@@ -629,7 +634,7 @@ contains
 
     subroutine init_collisions
         use params, only: am1, am2, Z1, Z2, facE_al, dchichi, slowrate, &
-                          dchichi_norm, slowrate_norm, v0
+                          dchichi_norm, slowrate_norm, v0, dtaumin
         use simple_profiles, only: Te_scale, Ti1_scale, Ti2_scale, &
                                    ni1_scale, ni2_scale
 
@@ -650,6 +655,8 @@ contains
         if (abs(v0_coll - v0) > 1d-6) then
             error stop 'simple_main.init_collisions: v0_coll != v0'
         end if
+
+        collision_nsub_max = collision_substep_cap(dtaumin)  ! ceiling from dtaumin + thermal dhh
 
         call init_collision_profiles(am1, am2, Z1, Z2, ealpha, v0)
     end subroutine init_collisions
@@ -1099,11 +1106,45 @@ contains
     subroutine collide(z, dt)
         real(dp), intent(inout) :: z(5)
         real(dp), intent(in) :: dt
-        integer :: ierr_coll
+        integer :: ierr_coll, isub, nsub_remaining
+        real(dp) :: dpp, dhh, fpeff, t_remaining, dt_sub
+        logical :: resolved
 
-        call stost(z, dt, 1, ierr_coll)
-        if (ierr_coll /= 0) then
-            print *, 'Error in stost: ', ierr_coll, 'z = ', z, 'dtaumin = ', dtaumin
+        ! Sub-cycle the collision step only when needed, re-evaluating at every
+        ! sub-step. collision_substeps sizes the count so each Langevin increment
+        ! (pitch and energy) stays small: fast markers need just one step (unchanged
+        ! path); slow markers (dhh ~ 1/p**2) get more sub-steps, with the coefficients
+        ! recomputed each sub-step so the resolution tracks the marker as its energy
+        ! and pitch evolve within the step.
+        !
+        ! Diagnostics go to diag_counters (aggregated by progress_monitor) rather
+        ! than per-step prints, which would flood stdout from the parallel orbit loop.
+        resolved = .false.
+        t_remaining = dt
+        do isub = 1, collision_nsub_max
+            call coleff(z(4), dpp, dhh, fpeff)
+            nsub_remaining = collision_substeps(dpp, dhh, fpeff, z(4), t_remaining)   ! stable steps left for t_remaining
+            dt_sub = t_remaining/dble(nsub_remaining)
+
+            call stost(z, dt_sub, 1, ierr_coll)
+            call count_event(EVT_COLLIDE_SUBSTEP)
+            if (mod(ierr_coll, 10) == 2) call count_event(EVT_STOST_PITCH_OVERSHOOT)
+
+            t_remaining = t_remaining - dt_sub
+            if (nsub_remaining == 1) then
+                resolved = .true.
+                exit                    ! one stable step covered the remainder
+            end if
+        end do
+
+        ! Hit the sub-step ceiling without resolving: too collisional to fully
+        ! resolve. Take the remaining time in one step and continue (stost fix-ups
+        ! absorb it).
+        if (.not. resolved) then
+            call count_event(EVT_COLLIDE_CAP)
+            call stost(z, t_remaining, 1, ierr_coll)
+            call count_event(EVT_COLLIDE_SUBSTEP)
+            if (mod(ierr_coll, 10) == 2) call count_event(EVT_STOST_PITCH_OVERSHOOT)
         end if
     end subroutine collide
 
