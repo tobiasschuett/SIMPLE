@@ -22,7 +22,6 @@ module simple_main
                         wall_hit_angle_rad, ntau_macro, kt_macro, &
                         checkpoint_interval, orbit_model, orbit_coord, &
                         ORBIT_GC, ORBIT_FULL_ORBIT
-    use diag_counters, only: diag_counters_init, checkpoint_interval
     use diag_counters, only: diag_counters_init, count_event, &
                              EVT_STOST_PITCH_OVERSHOOT, EVT_COLLIDE_SUBSTEP, &
                              EVT_COLLIDE_CAP
